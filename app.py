@@ -106,7 +106,7 @@ def safe_jsonify(data):
     return Response(json.dumps(safe_data, allow_nan=False), mimetype="application/json")
 
 
-@app.route("/analyze", methods=["POST"])
+
 @app.route("/analyze", methods=["POST"])
 def analyze_data():
     try:
@@ -217,11 +217,29 @@ def clean_data():
         # Remove duplicates
         df = df.drop_duplicates()
 
-        # ❌ Drop any row that contains even one NaN value
+        # Drop any row that contains even one NaN value
         df = df.dropna(how="any")
 
         after_rows = len(df)
         removed_rows = before_rows - after_rows
+
+        # --- Smart type conversion (same as analyze) ---
+        for col in df.columns:
+            series = df[col]
+
+            converted_date = pd.to_datetime(series, errors="coerce")
+            if converted_date.notna().sum() > len(series) * 0.8:
+                df[col] = converted_date
+                continue
+
+            converted_num = pd.to_numeric(series, errors="coerce")
+            if converted_num.notna().sum() > len(series) * 0.8:
+                df[col] = converted_num
+                continue
+
+            df[col] = series.astype("string")
+
+        df = df.convert_dtypes()
 
         summary = {
             "rows_before": before_rows,
@@ -230,28 +248,26 @@ def clean_data():
             "columns": len(df.columns)
         }
 
+        # --- Compute describe + numeric stats ---
         describe_data = {}
         numeric_stats = {}
+        numeric_df = df.select_dtypes(include=["number"])
 
-        # ---- Stats generation (only if data remains) ----
-        if not df.empty:
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
+        if not numeric_df.empty:
+            describe_data = numeric_df.describe(include="all").transpose().to_dict(orient="index")
 
-            if len(numeric_cols) > 0:
-                describe_data = df[numeric_cols].describe().to_dict()
-
-                for col in numeric_cols:
-                    series = df[col].dropna()
-                    if not series.empty:
-                        numeric_stats[col] = {
-                            "count": int(series.count()),
-                            "mean": float(series.mean()),
-                            "median": float(series.median()),
-                            "mode": float(series.mode().iloc[0]) if not series.mode().empty else None,
-                            "std_dev": float(series.std()) if series.count() > 1 else 0,
-                            "min": float(series.min()),
-                            "max": float(series.max()),
-                        }
+            for col in numeric_df.columns:
+                s = numeric_df[col].dropna()
+                if not s.empty:
+                    numeric_stats[col] = {
+                        "count": int(s.count()),
+                        "mean": float(s.mean()),
+                        "median": float(s.median()),
+                        "mode": float(s.mode().iloc[0]) if not s.mode().empty else None,
+                        "std_dev": float(s.std()) if s.count() > 1 else 0,
+                        "min": float(s.min()),
+                        "max": float(s.max())
+                    }
 
         cleaned_data = df.where(pd.notnull(df), None).to_dict(orient="records")
 
@@ -267,6 +283,7 @@ def clean_data():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 
 
